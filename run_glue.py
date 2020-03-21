@@ -30,6 +30,7 @@ import torch
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
+from sklearn.metrics import classification_report, confusion_matrix
 
 from transformers.file_utils import is_tf_available, is_torch_available
 
@@ -65,8 +66,22 @@ from transformers import (
     XLNetTokenizer,
     get_linear_schedule_with_warmup,
 )
-from transformers import glue_compute_metrics as compute_metrics
+# from transformers import glue_compute_metrics as compute_metrics
 from transformers.data.processors.utils import InputExample, InputFeatures
+
+def compute_metrics(preds,labels):
+    assert len(preds) == len(labels)
+    cm=confusion_matrix(np.ravel(labels),preds)
+    print("\n\nConfusion Matrix\n")
+    print(cm)
+
+    cr=classification_report(np.ravel(labels),preds)
+    print("\n\nClassification Report\n")
+    print(cr)
+    def simple_accuracy(preds, labels):
+        return (preds == labels).mean()
+    return {"acc": simple_accuracy(preds, labels)}
+
 
 # Needs to be edited read_tsv method
 class DataProcessor(object):
@@ -100,10 +115,12 @@ class DataProcessor(object):
         return example
 
     @classmethod
-    def _read_tsv(cls, input_file, quotechar=None):
-        """Reads a tab separated value file."""
+    def _read_json(cls, input_file, quotechar=None):
+        """Reads a comma separated value file."""
+        # f = open(input_file, 'r',encoding="utf-8-sig") 
+        # return f.readlines()
         with open(input_file, "r", encoding="utf-8-sig") as f:
-            return list(csv.reader(f, delimiter="\t", quotechar=quotechar))
+            return list(csv.reader(f, delimiter=",", quotechar=quotechar))
 
 # Needs to be edited
 class SarcasmProcessor(DataProcessor):
@@ -120,11 +137,15 @@ class SarcasmProcessor(DataProcessor):
 
     def get_train_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+        return self._create_examples(self._read_json(os.path.join(data_dir, "train.csv")), "train")
 
     def get_dev_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+        return self._create_examples(self._read_json(os.path.join(data_dir, "valid.csv")), "valid")
+    
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(self._read_json(os.path.join(data_dir, "test.csv")), "test")
 
     def get_labels(self):
         """See base class."""
@@ -132,11 +153,12 @@ class SarcasmProcessor(DataProcessor):
 
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
+        # print("type of lines",type(lines))
         examples = []
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
-            text_a = line[3]
-            label = line[1]
+            text_a = line[1]
+            label = line[0]
             examples.append(InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
         return examples
 
@@ -522,7 +544,7 @@ def evaluate(args, model, tokenizer, prefix=""):
 
     results = {}
     for eval_task, eval_output_dir in zip(eval_task_names, eval_outputs_dirs):
-        eval_dataset = load_and_cache_examples(args, eval_task, tokenizer, evaluate=True)
+        eval_dataset = load_and_cache_examples(args, eval_task, tokenizer, evaluate=True, test=False)
 
         if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
             os.makedirs(eval_output_dir)
@@ -584,7 +606,78 @@ def evaluate(args, model, tokenizer, prefix=""):
     return results
 
 
-def load_and_cache_examples(args, task, tokenizer, evaluate=False):
+def predict(args, model, tokenizer, prefix=""):
+    # Loop to handle MNLI double evaluation (matched, mis-matched)
+    eval_task = args.task_name
+    eval_output_dir = args.output_dir
+
+    test_dataset = load_and_cache_examples(args, eval_task, tokenizer, evaluate=False, test=True)
+
+    if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
+        os.makedirs(eval_output_dir)
+
+    args.test_batch_size = args.per_gpu_test_batch_size * max(1, args.n_gpu)
+    # Note that DistributedSampler samples randomly
+    test_sampler = SequentialSampler(test_dataset)
+    test_dataloader = DataLoader(test_dataset, sampler=test_sampler, batch_size=args.test_batch_size)
+
+    # multi-gpu eval
+    if args.n_gpu > 1 and not isinstance(model, torch.nn.DataParallel):
+        model = torch.nn.DataParallel(model)
+
+    # Test!
+    logger.info("***** Running prediction {} *****".format(prefix))
+    logger.info("  Num examples = %d", len(test_dataset))
+    logger.info("  Batch size = %d", args.test_batch_size)
+    test_loss = 0.0
+    nb_test_steps = 0
+    preds = None
+    out_label_ids = None
+    for batch in tqdm(test_dataloader, desc="Predicting"):
+        model.eval()
+        batch = tuple(t.to(args.device) for t in batch)
+
+        with torch.no_grad():
+            inputs = {"input_ids": batch[0], "attention_mask": batch[1], "labels": batch[3]}
+            if args.model_type != "distilbert":
+                inputs["token_type_ids"] = (
+                    batch[2] if args.model_type in ["bert", "xlnet", "albert"] else None
+                )  # XLM, DistilBERT, RoBERTa, and XLM-RoBERTa don't use segment_ids
+            outputs = model(**inputs)
+            tmp_test_loss, logits = outputs[:2]
+
+            test_loss += tmp_test_loss.mean().item()
+        nb_test_steps += 1
+        if preds is None:
+            preds = logits.detach().cpu().numpy()
+            out_label_ids = inputs["labels"].detach().cpu().numpy()
+        else:
+            preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
+            out_label_ids = np.append(out_label_ids, inputs["labels"].detach().cpu().numpy(), axis=0)
+
+    test_loss = test_loss / nb_test_steps
+    if args.output_mode == "classification":
+        preds = np.argmax(preds, axis=1)
+    elif args.output_mode == "regression":
+        preds = np.squeeze(preds)
+    result = compute_metrics(eval_task, preds, out_label_ids)
+    # results.update(result)
+
+    output_pred_file = os.path.join(eval_output_dir, prefix, "test_results.txt")
+    import csv
+    with open(output_pred_file, "w",newline="") as f:
+        # logger.info("***** Pred results {} *****".format(prefix))
+        # for key in sorted(result.keys()):
+        #     logger.info("  %s = %s", key, str(result[key]))
+        #     writer.write("%s = %s\n" % (key, str(result[key])))
+
+        writer = csv.writer(f)
+        writer.writerows(preds)
+
+    return result
+
+
+def load_and_cache_examples(args, task, tokenizer, evaluate=False,test=False):
     if args.local_rank not in [-1, 0] and not evaluate:
         torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
 
@@ -610,7 +703,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
             # HACK(label indices are swapped in RoBERTa pretrained model)
             label_list[1], label_list[2] = label_list[2], label_list[1]
         examples = (
-            processor.get_dev_examples(args.data_dir) if evaluate else processor.get_train_examples(args.data_dir)
+            processor.get_dev_examples(args.data_dir) if evaluate else processor.get_test_examples(args.data_dir) if test else processor.get_train_examples(args.data_dir)
         )
         features = convert_examples_to_features(
             examples,
@@ -707,6 +800,8 @@ def main():
     )
     parser.add_argument("--do_train", action="store_true", help="Whether to run training.")
     parser.add_argument("--do_eval", action="store_true", help="Whether to run eval on the dev set.")
+    parser.add_argument("--do_test", action="store_true", help="Whether to run test on the test set.")
+
     parser.add_argument(
         "--evaluate_during_training", action="store_true", help="Run evaluation during training at each logging step.",
     )
@@ -719,6 +814,9 @@ def main():
     )
     parser.add_argument(
         "--per_gpu_eval_batch_size", default=8, type=int, help="Batch size per GPU/CPU for evaluation.",
+    )
+    parser.add_argument(
+        "--per_gpu_test_batch_size", default=8, type=int, help="Batch size per GPU/CPU for testing.",
     )
     parser.add_argument(
         "--gradient_accumulation_steps",
@@ -866,7 +964,7 @@ def main():
 
     # Training
     if args.do_train:
-        train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False)
+        train_dataset = load_and_cache_examples(args, args.task_name, tokenizer, evaluate=False,test=False)
         global_step, tr_loss = train(args, train_dataset, model, tokenizer)
         logger.info(" global_step = %s, average loss = %s", global_step, tr_loss)
 
@@ -913,6 +1011,12 @@ def main():
             result = evaluate(args, model, tokenizer, prefix=prefix)
             result = dict((k + "_{}".format(global_step), v) for k, v in result.items())
             results.update(result)
+    
+    if args.do_test:
+        model = model_class.from_pretrained(args.output_dir)
+        tokenizer = tokenizer_class.from_pretrained(args.output_dir)
+        model.to(args.device)
+        result = predict(args, model, tokenizer, prefix=prefix)
 
     return results
 
