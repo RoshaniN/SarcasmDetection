@@ -115,7 +115,7 @@ class DataProcessor(object):
         return example
 
     @classmethod
-    def _read_json(cls, input_file, quotechar=None):
+    def _read_csv(cls, input_file, quotechar=None):
         """Reads a comma separated value file."""
         # f = open(input_file, 'r',encoding="utf-8-sig") 
         # return f.readlines()
@@ -137,15 +137,15 @@ class SarcasmProcessor(DataProcessor):
 
     def get_train_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_json(os.path.join(data_dir, "train.csv")), "train")
+        return self._create_examples(self._read_csv(os.path.join(data_dir, "train.csv")), "train")
 
     def get_dev_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_json(os.path.join(data_dir, "valid.csv")), "valid")
+        return self._create_examples(self._read_csv(os.path.join(data_dir, "valid.csv")), "valid")
     
     def get_test_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_json(os.path.join(data_dir, "test.csv")), "test")
+        return self._create_examples(self._read_csv(os.path.join(data_dir, "test.csv")), "test")
 
     def get_labels(self):
         """See base class."""
@@ -157,8 +157,8 @@ class SarcasmProcessor(DataProcessor):
         examples = []
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
-            text_a = line[1]
-            label = line[0]
+            text_a = line[0]
+            label = line[1]
             examples.append(InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
         return examples
 
@@ -663,7 +663,7 @@ def predict(args, model, tokenizer, prefix=""):
     result = compute_metrics(eval_task, preds, out_label_ids)
     # results.update(result)
 
-    output_pred_file = os.path.join(eval_output_dir, prefix, "test_results.txt")
+    output_pred_file = os.path.join(eval_output_dir, prefix, "test_results.csv")
     import csv
     with open(output_pred_file, "w",newline="") as f:
         # logger.info("***** Pred results {} *****".format(prefix))
@@ -1023,5 +1023,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# edited for push MM
