@@ -23,6 +23,7 @@ import glob
 import json
 import logging
 import os
+import csv
 import random
 
 import numpy as np
@@ -137,15 +138,15 @@ class SarcasmProcessor(DataProcessor):
 
     def get_train_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_csv(os.path.join(data_dir, "train.csv")), "train")
+        return self._create_examples(self._read_csv(os.path.join(data_dir, "train.csv"),"\""), "train")
 
     def get_dev_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_csv(os.path.join(data_dir, "valid.csv")), "valid")
+        return self._create_examples(self._read_csv(os.path.join(data_dir, "valid.csv"),"\""), "valid")
     
     def get_test_examples(self, data_dir):
         """See base class."""
-        return self._create_examples(self._read_csv(os.path.join(data_dir, "test.csv")), "test")
+        return self._create_examples(self._read_csv(os.path.join(data_dir, "test.csv"),"\""), "test")
 
     def get_labels(self):
         """See base class."""
