@@ -161,7 +161,7 @@ class SarcasmProcessor(DataProcessor):
             text_a = line[0]
             label = line[1]
             examples.append(InputExample(guid=guid, text_a=text_a, text_b=None, label=label))
-        return examples
+        return examples 
 
 
 processors = {
@@ -594,7 +594,7 @@ def evaluate(args, model, tokenizer, prefix=""):
             preds = np.argmax(preds, axis=1)
         elif args.output_mode == "regression":
             preds = np.squeeze(preds)
-        result = compute_metrics(eval_task, preds, out_label_ids)
+        result = compute_metrics(preds, out_label_ids)
         results.update(result)
 
         output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
@@ -661,8 +661,10 @@ def predict(args, model, tokenizer, prefix=""):
         preds = np.argmax(preds, axis=1)
     elif args.output_mode == "regression":
         preds = np.squeeze(preds)
-    result = compute_metrics(eval_task, preds, out_label_ids)
+    result = compute_metrics(preds, out_label_ids)
     # results.update(result)
+
+    p=preds.tolist()
 
     output_pred_file = os.path.join(eval_output_dir, prefix, "test_results.csv")
     import csv
@@ -671,9 +673,9 @@ def predict(args, model, tokenizer, prefix=""):
         # for key in sorted(result.keys()):
         #     logger.info("  %s = %s", key, str(result[key]))
         #     writer.write("%s = %s\n" % (key, str(result[key])))
-
         writer = csv.writer(f)
-        writer.writerows(preds)
+        for row in p:
+            writer.writerow([row])
 
     return result
 
@@ -688,7 +690,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False,test=False):
     cached_features_file = os.path.join(
         args.data_dir,
         "cached_{}_{}_{}_{}".format(
-            "dev" if evaluate else "train",
+            "dev" if evaluate else "test" if test else "train",
             list(filter(None, args.model_name_or_path.split("/"))).pop(),
             str(args.max_seq_length),
             str(task),
@@ -706,6 +708,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False,test=False):
         examples = (
             processor.get_dev_examples(args.data_dir) if evaluate else processor.get_test_examples(args.data_dir) if test else processor.get_train_examples(args.data_dir)
         )
+
         features = convert_examples_to_features(
             examples,
             tokenizer,
@@ -1016,7 +1019,10 @@ def main():
     if args.do_test:
         model = model_class.from_pretrained(args.output_dir)
         tokenizer = tokenizer_class.from_pretrained(args.output_dir)
-        model.to(args.device)
+        checkpoints = [args.output_dir]
+        print (checkpoints)
+        checkpoint="checkpoint-1000"
+        prefix = checkpoint.split("/")[-1] if checkpoint.find("checkpoint") != -1 else "" #changed this
         result = predict(args, model, tokenizer, prefix=prefix)
 
     return results
