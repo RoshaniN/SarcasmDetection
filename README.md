@@ -1,4 +1,8 @@
 # SarcasmDetection
+
+[P2_project_report.pdf](https://github.com/RoshaniN/SarcasmDetection/files/7967384/P2_project_report.pdf)
+
+
 Detection of sarcasm from news headlines using BERT
 
 
